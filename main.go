@@ -18,9 +18,9 @@ func main() {
 	strippedFileServer := http.StripPrefix("/app/", http.FileServer(http.Dir("./")))
 
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(strippedFileServer))
-	mux.HandleFunc("/healthz", ReadinessEndpoint)
-	mux.HandleFunc("/metrics", apiCfg.PrintFileServerHits())
-	mux.HandleFunc("/reset", apiCfg.ResetFileServerHits())
+	mux.HandleFunc("GET /healthz", ReadinessEndpoint)
+	mux.HandleFunc("GET /metrics", apiCfg.PrintFileServerHits())
+	mux.HandleFunc("POST /reset", apiCfg.ResetFileServerHits())
 
 	server := http.Server{
 		Addr:    ":8080",
@@ -39,10 +39,10 @@ func ReadinessEndpoint(w http.ResponseWriter, r *http.Request) {
 func (cfg *apiConfig) PrintFileServerHits() http.HandlerFunc{
 	return func(w http.ResponseWriter, r *http.Request) {
 		hits := cfg.fileserverHits.Load()
-		
+
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(200)
-		w.Write([]byte(fmt.Sprintf("Hits: %d", hits)))
+		fmt.Fprintf(w, "Hits: %d", hits)
 	}
 }
 
@@ -52,7 +52,6 @@ func (cfg *apiConfig) ResetFileServerHits() http.HandlerFunc{
 
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(200)
-		w.Write([]byte("Hits reset to 0"))
 	}
 }
 
