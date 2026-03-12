@@ -18,9 +18,9 @@ func main() {
 	strippedFileServer := http.StripPrefix("/app/", http.FileServer(http.Dir("./")))
 
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(strippedFileServer))
-	mux.HandleFunc("GET /healthz", ReadinessEndpoint)
-	mux.HandleFunc("GET /metrics", apiCfg.PrintFileServerHits())
-	mux.HandleFunc("POST /reset", apiCfg.ResetFileServerHits())
+	mux.HandleFunc("GET /api/healthz", ReadinessEndpoint)
+	mux.HandleFunc("GET /api/metrics", apiCfg.PrintFileServerHits())
+	mux.HandleFunc("POST /api/reset", apiCfg.ResetFileServerHits())
 
 	server := http.Server{
 		Addr:    ":8080",
