@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
+	"strings"
 	"sync/atomic"
 )
 
@@ -58,7 +60,8 @@ func ValidateEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondWithJSON(w, http.StatusOK, map[string]bool{"valid": true})
+	cleanedBody := wordReplacement(params.Body)
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{"cleaned_body": cleanedBody})
 }
 
 func (cfg *apiConfig) PrintFileServerHits() http.HandlerFunc{
@@ -86,6 +89,28 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 		cfg.fileserverHits.Add(1)
 		next.ServeHTTP(w, r)
 	})
+}
+
+func wordReplacement(input string) string {
+	wordsToReplace := []string{
+		"kerfuffle",
+		"sharbert",
+		"fornax",
+	}
+
+	words := strings.Split(input, " ")
+
+	fixedString := ""
+
+	for _, word := range words {
+		if slices.Contains(wordsToReplace, strings.ToLower(word)) {
+			fixedString += "**** "
+		} else {
+			fixedString += word + " "
+		}
+	}
+
+	return strings.TrimSpace(fixedString)
 }
 
 func respondWithError(w http.ResponseWriter, code int, msg string) {
