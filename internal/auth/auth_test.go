@@ -3,7 +3,6 @@ package auth
 import (
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 )
@@ -36,9 +35,8 @@ func TestHashAndCheckPassword(t *testing.T) {
 func TestMakeAndValidateJWT(t *testing.T) {
 	userID := uuid.New()
 	tokenSecret := "my_secret_key"
-	expiresIn := time.Second
 
-	token, err := MakeJWT(userID, tokenSecret, expiresIn)
+	token, err := MakeJWT(userID, tokenSecret)
 	if err != nil {
 		t.Fatalf("Error making JWT: %s", err)
 	}
@@ -55,9 +53,8 @@ func TestMakeAndValidateJWT(t *testing.T) {
 func TestExpiredJWT(t *testing.T) {
 	userID := uuid.New()
 	tokenSecret := "my_secret_key"
-	expiresIn := -time.Second // Token that expires immediately
 
-	token, err := MakeJWT(userID, tokenSecret, expiresIn)
+	token, err := MakeJWT(userID, tokenSecret)
 	if err != nil {
 		t.Fatalf("Error making JWT: %s", err)
 	}

@@ -32,6 +32,7 @@ type User struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
 	Token     string    `json:"token"`
+	RefreshToken string `json:"refresh_token"`
 }
 
 type Chirp struct {
@@ -75,6 +76,9 @@ func main() {
 
 	mux.HandleFunc("POST /api/users", apiCfg.CreateUser)
 	mux.HandleFunc("POST /api/login", apiCfg.LoginUser)
+
+	mux.HandleFunc("POST /api/refresh", apiCfg.RefreshToken)
+	mux.HandleFunc("POST /api/revoke", apiCfg.RevokeToken)
 
 	mux.HandleFunc("GET /admin/metrics", apiCfg.PrintFileServerHits())
 	mux.HandleFunc("POST /admin/reset", apiCfg.ResetFileServerHits())
@@ -240,7 +244,6 @@ func (cfg *apiConfig) LoginUser(w http.ResponseWriter, r *http.Request) {
 	type LoginParams struct {
 		Password string `json:"password"`
 		Email string `json:"email"`
-		ExpiresInSeconds int `json:"expires_in_seconds"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -263,14 +266,27 @@ func (cfg *apiConfig) LoginUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expiry := 60 * 60 // Default to 1 hour if not provided
-	if params.ExpiresInSeconds > 0 && params.ExpiresInSeconds <= 60*60 {
-		expiry = params.ExpiresInSeconds
-	}
-
-	authToken, err := auth.MakeJWT(user.ID, cfg.secret, time.Duration(expiry)*time.Second)
+	authToken, err := auth.MakeJWT(user.ID, cfg.secret)
 	if err != nil {
 		respondWithError(w, 500, fmt.Sprintf("Error creating auth token: %s", err))
+		return
+	}
+
+	refreshToken, err := auth.MakeRefreshToken()
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error creating refresh token: %s", err))
+		return
+	}
+
+	refreshTokenParams := database.CreateRefreshTokenParams{
+		Token: refreshToken,
+		UserID: user.ID,
+		ExpiresAt: time.Now().Add(60 * 24 * time.Hour), // Set expiry to 60 days from now
+	}
+
+	_, err = cfg.db.CreateRefreshToken(r.Context(), refreshTokenParams)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error adding refresh token to database: %s", err))
 		return
 	}
 
@@ -280,9 +296,65 @@ func (cfg *apiConfig) LoginUser(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
 		Token: authToken,
+		RefreshToken: refreshToken,
 	}
 
 	respondWithJSON(w, http.StatusOK, returnUser)
+}
+
+func (cfg *apiConfig) RefreshToken(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized: Bearer token not found")
+		return
+	}
+
+	refreshToken, err := cfg.db.GetRefreshToken(r.Context(), token)
+	if err != nil {
+		respondWithError(w, 401, fmt.Sprintf("Error getting refresh token: %s", err))
+		return
+	}
+
+	if refreshToken.ExpiresAt.Before(time.Now()) || refreshToken.RevokedAt.Valid {
+		respondWithError(w, 401, "Refresh token has expired or been revoked")
+		return
+	}
+	
+	user, err := cfg.db.GetUserByID(r.Context(), refreshToken.UserID)
+	if err != nil {
+		respondWithError(w, 401, fmt.Sprintf("Error getting user: %s", err))
+		return
+	}
+
+	authToken, err := auth.MakeJWT(user.ID, cfg.secret)
+
+	type TokenObj struct{
+		Token string `json:"token"`
+	}
+
+	respondWithJSON(w, 200, TokenObj{Token: authToken})
+}
+
+func (cfg *apiConfig) RevokeToken(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized: Bearer token not found")
+		return
+	}
+
+	refreshToken, err := cfg.db.GetRefreshToken(r.Context(), token)
+	if err != nil {
+		respondWithError(w, 401, fmt.Sprintf("Error getting refresh token: %s", err))
+		return
+	}
+
+	err = cfg.db.RevokeRefreshToken(r.Context(), refreshToken.Token)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error revoking refresh token: %s", err))
+		return
+	}
+
+	w.WriteHeader(204)
 }
 
 func (cfg *apiConfig) PrintFileServerHits() http.HandlerFunc{
