@@ -23,6 +23,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	db *database.Queries
 	platform string
+	secret string
 }
 
 type User struct {
@@ -30,6 +31,7 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+	Token     string    `json:"token"`
 }
 
 type Chirp struct {
@@ -56,6 +58,7 @@ func main() {
 	apiCfg := &apiConfig{
 		db: dbQueries,
 		platform: os.Getenv("PLATFORM"),
+		secret: os.Getenv("SECRET"),
 	}
 
 	mux := http.NewServeMux()
@@ -93,7 +96,6 @@ func (cfg *apiConfig) ReadinessEndpoint(w http.ResponseWriter, r *http.Request) 
 func (cfg *apiConfig) CreateChirp(w http.ResponseWriter, r *http.Request) {
 	type ChirpParams struct {
         Body string `json:"body"`
-		UserID uuid.UUID `json:"user_id"`
     }
 
 	decoder := json.NewDecoder(r.Body)
@@ -104,6 +106,18 @@ func (cfg *apiConfig) CreateChirp(w http.ResponseWriter, r *http.Request) {
 		return
     }
 
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized: Bearer token not found")
+		return
+	}
+
+	authUserID, err := auth.ValidateJWT(token, cfg.secret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized: Invalid token")
+		return
+	}
+
 	if len(params.Body) > 140 {
 		respondWithError(w, http.StatusBadRequest, "Chirp body is too long")
 		return
@@ -113,7 +127,7 @@ func (cfg *apiConfig) CreateChirp(w http.ResponseWriter, r *http.Request) {
 
 	chirpParams := database.CreateChirpParams{
 		Body: cleanedBody,
-		UserID: params.UserID,
+		UserID: authUserID,
 	}
 
 	chirp, err := cfg.db.CreateChirp(r.Context(), chirpParams)
@@ -226,6 +240,7 @@ func (cfg *apiConfig) LoginUser(w http.ResponseWriter, r *http.Request) {
 	type LoginParams struct {
 		Password string `json:"password"`
 		Email string `json:"email"`
+		ExpiresInSeconds int `json:"expires_in_seconds"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -248,11 +263,23 @@ func (cfg *apiConfig) LoginUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	expiry := 60 * 60 // Default to 1 hour if not provided
+	if params.ExpiresInSeconds > 0 && params.ExpiresInSeconds <= 60*60 {
+		expiry = params.ExpiresInSeconds
+	}
+
+	authToken, err := auth.MakeJWT(user.ID, cfg.secret, time.Duration(expiry)*time.Second)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error creating auth token: %s", err))
+		return
+	}
+
 	returnUser := User{
 		ID: user.ID,
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
+		Token: authToken,
 	}
 
 	respondWithJSON(w, http.StatusOK, returnUser)
