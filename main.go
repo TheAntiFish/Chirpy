@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/TheAntiFish/Chirpy/internal/auth"
 	"github.com/TheAntiFish/Chirpy/internal/database"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -69,7 +70,8 @@ func main() {
 	mux.HandleFunc("GET /api/chirps", apiCfg.GetChirps)
 	mux.HandleFunc("GET /api/chirps/{id}", apiCfg.GetChirpByID)
 
-	mux.HandleFunc("POST /api/users", apiCfg.CreateUserEndpoint)
+	mux.HandleFunc("POST /api/users", apiCfg.CreateUser)
+	mux.HandleFunc("POST /api/login", apiCfg.LoginUser)
 
 	mux.HandleFunc("GET /admin/metrics", apiCfg.PrintFileServerHits())
 	mux.HandleFunc("POST /admin/reset", apiCfg.ResetFileServerHits())
@@ -179,8 +181,9 @@ func (cfg *apiConfig) GetChirpByID(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusOK, returnChirp)
 }
 
-func (cfg *apiConfig) CreateUserEndpoint(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) CreateUser(w http.ResponseWriter, r *http.Request) {
 	type UserParams struct {
+		Password string `json:"password"`
 		Email string `json:"email"`
 	}
 
@@ -192,7 +195,18 @@ func (cfg *apiConfig) CreateUserEndpoint(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	user, err := cfg.db.CreateUser(r.Context(), params.Email)
+	hashedPassword, err := auth.HashPassword(params.Password)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error hashing password: %s", err))
+		return
+	}
+
+	userParams := database.CreateUserParams{
+		Email: params.Email,
+		HashedPassword: hashedPassword,
+	}
+
+	user, err := cfg.db.CreateUser(r.Context(), userParams)
 	if err != nil {
 		respondWithError(w, 500, fmt.Sprintf("Error creating user: %s", err))
 		return
@@ -206,6 +220,42 @@ func (cfg *apiConfig) CreateUserEndpoint(w http.ResponseWriter, r *http.Request)
 	}
 
 	respondWithJSON(w, http.StatusCreated, returnUser)
+}
+
+func (cfg *apiConfig) LoginUser(w http.ResponseWriter, r *http.Request) {
+	type LoginParams struct {
+		Password string `json:"password"`
+		Email string `json:"email"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := LoginParams{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error decoding parameters: %s", err))
+		return
+	}
+
+	user, err := cfg.db.GetUserByEmail(r.Context(), params.Email)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Invalid email or password")
+		return
+	}
+
+	match, err := auth.CheckPasswordHash(params.Password, user.HashedPassword)
+	if err != nil || !match {
+		respondWithError(w, http.StatusUnauthorized, "Invalid email or password")
+		return
+	}
+
+	returnUser := User{
+		ID: user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email: user.Email,
+	}
+
+	respondWithJSON(w, http.StatusOK, returnUser)
 }
 
 func (cfg *apiConfig) PrintFileServerHits() http.HandlerFunc{
