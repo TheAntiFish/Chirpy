@@ -31,6 +31,14 @@ type User struct {
 	Email     string    `json:"email"`
 }
 
+type Chirp struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
+}
+
 func main() {
 	godotenv.Load()
 
@@ -56,7 +64,7 @@ func main() {
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(strippedFileServer))
 
 	mux.HandleFunc("GET /api/healthz", apiCfg.ReadinessEndpoint)
-	mux.HandleFunc("POST /api/validate_chirp", apiCfg.ValidateChirpEndpoint)
+	mux.HandleFunc("POST /api/chirps", apiCfg.ChirpEndpoint)
 	mux.HandleFunc("POST /api/users", apiCfg.CreateUserEndpoint)
 
 	mux.HandleFunc("GET /admin/metrics", apiCfg.PrintFileServerHits())
@@ -76,9 +84,10 @@ func (cfg *apiConfig) ReadinessEndpoint(w http.ResponseWriter, r *http.Request) 
 	w.Write([]byte("OK"))
 }
 
-func (cfg *apiConfig) ValidateChirpEndpoint(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) ChirpEndpoint(w http.ResponseWriter, r *http.Request) {
 	type ChirpParams struct {
         Body string `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
     }
 
 	decoder := json.NewDecoder(r.Body)
@@ -95,7 +104,27 @@ func (cfg *apiConfig) ValidateChirpEndpoint(w http.ResponseWriter, r *http.Reque
 	}
 
 	cleanedBody := wordReplacement(params.Body)
-	respondWithJSON(w, http.StatusOK, map[string]interface{}{"cleaned_body": cleanedBody})
+
+	chirpParams := database.CreateChirpParams{
+		Body: cleanedBody,
+		UserID: params.UserID,
+	}
+
+	chirp, err := cfg.db.CreateChirp(r.Context(), chirpParams)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error creating chirp: %s", err))
+		return
+	}
+
+	returnChirp := Chirp{
+		ID: chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body: chirp.Body,
+		UserID: chirp.UserID,
+	}
+
+	respondWithJSON(w, http.StatusCreated, returnChirp)
 }
 
 func (cfg *apiConfig) CreateUserEndpoint(w http.ResponseWriter, r *http.Request) {
