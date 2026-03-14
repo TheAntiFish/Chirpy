@@ -64,7 +64,11 @@ func main() {
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(strippedFileServer))
 
 	mux.HandleFunc("GET /api/healthz", apiCfg.ReadinessEndpoint)
-	mux.HandleFunc("POST /api/chirps", apiCfg.ChirpEndpoint)
+
+	mux.HandleFunc("POST /api/chirps", apiCfg.CreateChirp)
+	mux.HandleFunc("GET /api/chirps", apiCfg.GetChirps)
+	mux.HandleFunc("GET /api/chirps/{id}", apiCfg.GetChirpByID)
+
 	mux.HandleFunc("POST /api/users", apiCfg.CreateUserEndpoint)
 
 	mux.HandleFunc("GET /admin/metrics", apiCfg.PrintFileServerHits())
@@ -84,7 +88,7 @@ func (cfg *apiConfig) ReadinessEndpoint(w http.ResponseWriter, r *http.Request) 
 	w.Write([]byte("OK"))
 }
 
-func (cfg *apiConfig) ChirpEndpoint(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) CreateChirp(w http.ResponseWriter, r *http.Request) {
 	type ChirpParams struct {
         Body string `json:"body"`
 		UserID uuid.UUID `json:"user_id"`
@@ -125,6 +129,54 @@ func (cfg *apiConfig) ChirpEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondWithJSON(w, http.StatusCreated, returnChirp)
+}
+
+func (cfg *apiConfig) GetChirps(w http.ResponseWriter, r *http.Request) {
+	chirps, err := cfg.db.GetChirps(r.Context())
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error getting chirps: %s", err))
+		return
+	}
+
+	var returnChirps []Chirp
+
+	for _, chirp := range chirps {
+		returnChirp := Chirp{
+			ID: chirp.ID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			Body: chirp.Body,
+			UserID: chirp.UserID,
+		}
+		returnChirps = append(returnChirps, returnChirp)
+	}
+
+	respondWithJSON(w, http.StatusOK, returnChirps)
+}
+
+func (cfg *apiConfig) GetChirpByID(w http.ResponseWriter, r *http.Request) {
+	idStr := strings.TrimPrefix(r.PathValue("id"), "/api/chirps/")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid chirp ID")
+		return
+	}
+
+	chirp, err := cfg.db.GetChirpByID(r.Context(), id)
+	if err != nil {
+		respondWithError(w, 404, fmt.Sprintf("Error getting chirp: %s", err))
+		return
+	}
+
+	returnChirp := Chirp{
+		ID: chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body: chirp.Body,
+		UserID: chirp.UserID,
+	}
+
+	respondWithJSON(w, http.StatusOK, returnChirp)
 }
 
 func (cfg *apiConfig) CreateUserEndpoint(w http.ResponseWriter, r *http.Request) {
