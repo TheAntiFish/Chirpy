@@ -10,15 +10,25 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/TheAntiFish/Chirpy/internal/database"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
-	queries *database.Queries
+	db *database.Queries
+	platform string
+}
+
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
 }
 
 func main() {
@@ -35,7 +45,8 @@ func main() {
 	dbQueries := database.New(db)
 	
 	apiCfg := &apiConfig{
-		queries: dbQueries,
+		db: dbQueries,
+		platform: os.Getenv("PLATFORM"),
 	}
 
 	mux := http.NewServeMux()
@@ -43,8 +54,11 @@ func main() {
 	strippedFileServer := http.StripPrefix("/app/", http.FileServer(http.Dir("./")))
 
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(strippedFileServer))
-	mux.HandleFunc("GET /api/healthz", ReadinessEndpoint)
-	mux.HandleFunc("POST /api/validate_chirp", ValidateEndpoint)
+
+	mux.HandleFunc("GET /api/healthz", apiCfg.ReadinessEndpoint)
+	mux.HandleFunc("POST /api/validate_chirp", apiCfg.ValidateChirpEndpoint)
+	mux.HandleFunc("POST /api/users", apiCfg.CreateUserEndpoint)
+
 	mux.HandleFunc("GET /admin/metrics", apiCfg.PrintFileServerHits())
 	mux.HandleFunc("POST /admin/reset", apiCfg.ResetFileServerHits())
 
@@ -56,13 +70,13 @@ func main() {
 	server.ListenAndServe()
 }
 
-func ReadinessEndpoint(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) ReadinessEndpoint(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
 	w.Write([]byte("OK"))
 }
 
-func ValidateEndpoint(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) ValidateChirpEndpoint(w http.ResponseWriter, r *http.Request) {
 	type ChirpParams struct {
         Body string `json:"body"`
     }
@@ -71,8 +85,7 @@ func ValidateEndpoint(w http.ResponseWriter, r *http.Request) {
     params := ChirpParams{}
     err := decoder.Decode(&params)
     if err != nil {
-		log.Printf("Error decoding parameters: %s", err)
-		w.WriteHeader(500)
+		respondWithError(w, 500, fmt.Sprintf("Error decoding parameters: %s", err))
 		return
     }
 
@@ -83,6 +96,35 @@ func ValidateEndpoint(w http.ResponseWriter, r *http.Request) {
 
 	cleanedBody := wordReplacement(params.Body)
 	respondWithJSON(w, http.StatusOK, map[string]interface{}{"cleaned_body": cleanedBody})
+}
+
+func (cfg *apiConfig) CreateUserEndpoint(w http.ResponseWriter, r *http.Request) {
+	type UserParams struct {
+		Email string `json:"email"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := UserParams{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error decoding parameters: %s", err))
+		return
+	}
+
+	user, err := cfg.db.CreateUser(r.Context(), params.Email)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error creating user: %s", err))
+		return
+	}
+
+	returnUser := User{
+		ID: user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email: user.Email,
+	}
+
+	respondWithJSON(w, http.StatusCreated, returnUser)
 }
 
 func (cfg *apiConfig) PrintFileServerHits() http.HandlerFunc{
@@ -98,6 +140,11 @@ func (cfg *apiConfig) PrintFileServerHits() http.HandlerFunc{
 
 func (cfg *apiConfig) ResetFileServerHits() http.HandlerFunc{
 	return func(w http.ResponseWriter, r *http.Request) {
+		if cfg.platform != "dev"{
+			respondWithError(w, http.StatusForbidden, "Unauthorized")
+			return
+		}
+		cfg.db.DeleteAllUsers(r.Context())
 		cfg.fileserverHits.Store(0)
 
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
