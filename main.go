@@ -24,6 +24,7 @@ type apiConfig struct {
 	db *database.Queries
 	platform string
 	secret string
+	polkaKey string
 }
 
 type User struct {
@@ -33,6 +34,7 @@ type User struct {
 	Email     string    `json:"email"`
 	Token     string    `json:"token"`
 	RefreshToken string `json:"refresh_token"`
+	IsChirpyRed bool `json:"is_chirpy_red"`
 }
 
 type Chirp struct {
@@ -65,6 +67,7 @@ func main() {
 		db: dbQueries,
 		platform: os.Getenv("PLATFORM"),
 		secret: os.Getenv("SECRET"),
+		polkaKey: os.Getenv("POLKA_KEY"),
 	}
 
 	mux := http.NewServeMux()
@@ -86,6 +89,8 @@ func main() {
 
 	mux.HandleFunc("POST /api/refresh", apiCfg.RefreshToken)
 	mux.HandleFunc("POST /api/revoke", apiCfg.RevokeToken)
+
+	mux.HandleFunc("POST /api/polka/webhooks", apiCfg.SetUserRed)
 
 	mux.HandleFunc("GET /admin/metrics", apiCfg.PrintFileServerHits())
 	mux.HandleFunc("POST /admin/reset", apiCfg.ResetFileServerHits())
@@ -277,6 +282,7 @@ func (cfg *apiConfig) CreateUser(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
+		IsChirpyRed: user.IsChirpyRed,
 	}
 
 	respondWithJSON(w, http.StatusCreated, returnUser)
@@ -339,6 +345,7 @@ func (cfg *apiConfig) LoginUser(w http.ResponseWriter, r *http.Request) {
 		Email: user.Email,
 		Token: authToken,
 		RefreshToken: refreshToken,
+		IsChirpyRed: user.IsChirpyRed,
 	}
 
 	respondWithJSON(w, http.StatusOK, returnUser)
@@ -388,10 +395,60 @@ func (cfg *apiConfig) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
+		IsChirpyRed: user.IsChirpyRed,
 	}
 
 	respondWithJSON(w, http.StatusOK, returnUser)
 
+}
+
+func (cfg *apiConfig) SetUserRed(w http.ResponseWriter, r *http.Request) {
+	apiKey, err := auth.GetAPIKey(r.Header)
+	if err != nil || apiKey != cfg.polkaKey {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized: Invalid API key")
+		return
+	}
+
+	type DataParams struct {
+		UserId string `json:"user_id"`
+	}
+
+	type WebhookParams struct {
+		Event string `json:"event"`
+		Data DataParams `json:"data"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := WebhookParams{}
+	err = decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error decoding parameters: %s", err))
+		return
+	}
+
+	if params.Event != "user.upgraded" {
+		respondWithError(w, 204, "Ignore event")
+		return
+	}
+
+	userId, err := uuid.Parse(params.Data.UserId)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error parsing user ID: %s", err))
+		return
+	}
+
+	statusParams := database.SetChirpyRedStatusParams{
+		ID: userId,
+		IsChirpyRed: true,
+	}
+
+	_, err = cfg.db.SetChirpyRedStatus(r.Context(), statusParams)
+	if err != nil {
+		respondWithError(w, 404, fmt.Sprintf("Error setting user red: %s", err))
+		return
+	}
+
+	w.WriteHeader(204)
 }
 
 func (cfg *apiConfig) RefreshToken(w http.ResponseWriter, r *http.Request) {
