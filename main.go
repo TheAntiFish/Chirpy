@@ -43,6 +43,11 @@ type Chirp struct {
 	UserID    uuid.UUID `json:"user_id"`
 }
 
+type UserParams struct {
+		Password string `json:"password"`
+		Email string `json:"email"`
+}
+
 func main() {
 	godotenv.Load()
 
@@ -73,8 +78,10 @@ func main() {
 	mux.HandleFunc("POST /api/chirps", apiCfg.CreateChirp)
 	mux.HandleFunc("GET /api/chirps", apiCfg.GetChirps)
 	mux.HandleFunc("GET /api/chirps/{id}", apiCfg.GetChirpByID)
+	mux.HandleFunc("DELETE /api/chirps/{chirpId}", apiCfg.DeleteChirp)
 
 	mux.HandleFunc("POST /api/users", apiCfg.CreateUser)
+	mux.HandleFunc("PUT /api/users", apiCfg.UpdateUser)
 	mux.HandleFunc("POST /api/login", apiCfg.LoginUser)
 
 	mux.HandleFunc("POST /api/refresh", apiCfg.RefreshToken)
@@ -199,12 +206,47 @@ func (cfg *apiConfig) GetChirpByID(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusOK, returnChirp)
 }
 
-func (cfg *apiConfig) CreateUser(w http.ResponseWriter, r *http.Request) {
-	type UserParams struct {
-		Password string `json:"password"`
-		Email string `json:"email"`
+func (cfg *apiConfig) DeleteChirp(w http.ResponseWriter, r *http.Request) {
+	idStr := strings.TrimPrefix(r.PathValue("chirpId"), "/api/chirps/")
+	id, err := uuid.Parse(idStr)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid chirp ID")
+		return
 	}
 
+	chirp, err := cfg.db.GetChirpByID(r.Context(), id)
+	if err != nil {
+		respondWithError(w, 404, fmt.Sprintf("Error getting chirp: %s", err))
+		return
+	}
+
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized: Bearer token not found")
+		return
+	}
+
+	authUserID, err := auth.ValidateJWT(token, cfg.secret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized: Invalid token")
+		return
+	}
+
+	if chirp.UserID != authUserID {
+		respondWithError(w, http.StatusForbidden, "Forbidden: You can only delete your own chirps")
+		return
+	}
+
+	err = cfg.db.DeleteChirp(r.Context(), id)
+	if err != nil {
+		respondWithError(w, 404, fmt.Sprintf("Error deleting chirp: %s", err))
+		return
+	}
+
+	w.WriteHeader(204)
+}
+
+func (cfg *apiConfig) CreateUser(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
 	params := UserParams{}
 	err := decoder.Decode(&params)
@@ -300,6 +342,56 @@ func (cfg *apiConfig) LoginUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondWithJSON(w, http.StatusOK, returnUser)
+}
+
+func (cfg *apiConfig) UpdateUser(w http.ResponseWriter, r *http.Request) {
+	decoder := json.NewDecoder(r.Body)
+	params := UserParams{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error decoding parameters: %s", err))
+		return
+	}
+
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized: Bearer token not found")
+		return
+	}
+
+	authUserID, err := auth.ValidateJWT(token, cfg.secret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized: Invalid token")
+		return
+	}
+
+	hashedPassword, err := auth.HashPassword(params.Password)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error hashing password: %s", err))
+		return
+	}
+
+	userParams := database.UpdateUserParams{
+		ID: authUserID,
+		Email: params.Email,
+		HashedPassword: hashedPassword,
+	}
+
+	user, err := cfg.db.UpdateUser(r.Context(), userParams)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error updating user: %s", err))
+		return
+	}
+
+	returnUser := User{
+		ID: user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email: user.Email,
+	}
+
+	respondWithJSON(w, http.StatusOK, returnUser)
+
 }
 
 func (cfg *apiConfig) RefreshToken(w http.ResponseWriter, r *http.Request) {
