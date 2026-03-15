@@ -73,7 +73,7 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	strippedFileServer := http.StripPrefix("/app/", http.FileServer(http.Dir("./")))
+	strippedFileServer := http.StripPrefix("/app/", http.FileServer(http.Dir(os.Getenv("DIR"))))
 
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(strippedFileServer))
 
@@ -206,7 +206,7 @@ func (cfg *apiConfig) GetChirps(w http.ResponseWriter, r *http.Request) {
 	if sortMode == "desc"{
 		sort.Slice(returnChirps, func(i, j int) bool {return i > j})
 	}
-	
+
 	respondWithJSON(w, http.StatusOK, returnChirps)
 }
 
